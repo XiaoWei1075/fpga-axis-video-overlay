@@ -1,5 +1,4 @@
-
-`timescale 1 ns / 1 ps
+`timescale 1 ns / 1 ns
 
 module image_filter_slave_lite_v1_0_S00_AXI #
 (
@@ -240,6 +239,7 @@ end
 
 wire commit_bank_rising_edge = (commit_bank ? 1 : 0) & ~commit_bank_delay;
 
+// pipeline commit_bank_rising_edge to wait for item_stored flushed into ERAM
 reg [1:0] commit_bank_rising_edge_d;
 always @( posedge S_AXI_ACLK ) begin
 	if ( S_AXI_ARESETN == 1'b0 ) begin
@@ -249,6 +249,7 @@ always @( posedge S_AXI_ACLK ) begin
 	end
 end
 
+// eram_write_ptr was updated after item_stored flushed into ERAM
 always @( posedge S_AXI_ACLK )
 begin
 	if ( S_AXI_ARESETN == 1'b0 )

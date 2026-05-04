@@ -1,9 +1,9 @@
-
-`timescale 1 ns / 1 ps
+`timescale 1 ns / 1 ns
 
 module image_filter #
 (
 	// Users to add parameters here
+	parameter integer ERAM_ADDR_WIDTH = 13,
 
 	// User parameters ends
 
@@ -67,7 +67,9 @@ module image_filter #
 	output wire m00_axis_tuser
 );
 
-	localparam [23:0] FRAME_PIXELS = FRAME_WIDTH * FRAME_HEIGHT;
+	localparam integer ERAM_DATA_WIDTH = 64;
+	localparam integer COUNTER_WIDTH = 24;
+	localparam [COUNTER_WIDTH-1:0] FRAME_PIXELS = FRAME_WIDTH * FRAME_HEIGHT;
 
 	localparam [1:0] RGB888 = 2'b00;
 	localparam [1:0] BGR888 = 2'b01;
@@ -103,17 +105,19 @@ module image_filter #
 		end
 	endfunction
 
-	reg [23:0] pixel_cnt;
-	wire [23:0] pixel_cnt_plus1 = pixel_cnt + 1;
-	reg [12:0] eram_ptr;
-	wire [12:0] eram_ptr_plus1 = eram_ptr + 1;
-	wire [63:0] eram_dout;
+	reg  [COUNTER_WIDTH-1:0] pixel_cnt;
+	wire [COUNTER_WIDTH-1:0] pixel_cnt_plus1 = pixel_cnt + 1;
+	wire [ERAM_ADDR_WIDTH-1:0] eram_ptr;
+	wire [ERAM_DATA_WIDTH-1:0] eram_dout;
 	wire [C_S00_AXI_DATA_WIDTH-1:0] pixel_format;
-	wire [12:0] item_count;
-	reg  [12:0] active_item_count;
+	wire [ERAM_ADDR_WIDTH-1:0] item_count;
+	reg  [ERAM_ADDR_WIDTH-1:0] active_item_count;
 
 // Instantiation of Axi Bus Interface S00_AXI
 image_filter_slave_lite_v1_0_S00_AXI # ( 
+	.ERAM_DATA_WIDTH(ERAM_DATA_WIDTH),
+	.ERAM_ADDR_WIDTH(ERAM_ADDR_WIDTH),
+	.COUNTER_WIDTH(COUNTER_WIDTH),
 	.C_S_AXI_DATA_WIDTH(C_S00_AXI_DATA_WIDTH),
 	.C_S_AXI_ADDR_WIDTH(C_S00_AXI_ADDR_WIDTH),
 	.FRAME_WIDTH(FRAME_WIDTH),
@@ -152,10 +156,19 @@ image_filter_slave_lite_v1_0_S00_AXI # (
 
 // Add user logic here
 
+	reg axis_pipe_tvalid;
+	reg [C_AXIS_TDATA_WIDTH-1:0] axis_pipe_tdata;
+	reg [(C_AXIS_TDATA_WIDTH/8)-1:0] axis_pipe_tstrb;
+	reg axis_pipe_tlast;
+	reg axis_pipe_tuser;
+	wire axis_pipe_ready = ~axis_pipe_tvalid || m00_axis_tready;
+
+	wire axis_fire_in = s00_axis_tvalid && axis_pipe_ready;
+
 	always @(posedge axis_aclk or negedge axis_aresetn) begin
 		if (!axis_aresetn) begin
 			pixel_cnt <= FRAME_PIXELS - 1;
-		end else if (s00_axis_tvalid && m00_axis_tready) begin
+		end else if (axis_fire_in) begin
 			if (s00_axis_tuser) begin
 				pixel_cnt <= 1;	// The next pixel count
 			end else if (pixel_cnt == FRAME_PIXELS - 1) begin
@@ -166,14 +179,14 @@ image_filter_slave_lite_v1_0_S00_AXI # (
 		end
 	end
 
-	wire [63:0] item = eram_dout;
-	wire [23:0] item_offset  = item[63:40];
+	wire [ERAM_DATA_WIDTH-1:0] item;
+	wire [COUNTER_WIDTH-1:0] item_offset  = item[63:40];
 	wire [15:0] item_runlen  = item[39:24];
-	wire [23:0] item_RGB     = item[23:0];
+	wire [23:0] item_RGB     = to_rgb888(item[23:0], pixel_format[1:0]);
 
-	wire [23:0] item_end_offset = item_offset + item_runlen;
+	wire [COUNTER_WIDTH-1:0] item_end_offset = item_offset + item_runlen;
 
-	wire [23:0] item_rgb888 = to_rgb888(item_RGB, pixel_format[1:0]);
+	wire match = (pixel_cnt >= item_offset) && (pixel_cnt < item_end_offset);
 
 	always @(posedge axis_aclk or negedge axis_aresetn) begin
 		if (!axis_aresetn)
@@ -182,28 +195,44 @@ image_filter_slave_lite_v1_0_S00_AXI # (
 			active_item_count <= item_count;
 	end
 
+	fwft_fifo #(
+		.DATA_WIDTH(ERAM_DATA_WIDTH),
+		.ERAM_ADDR_WIDTH(ERAM_ADDR_WIDTH)
+	) prefetch (
+		.clk(axis_aclk),
+		.rst_n(axis_aresetn),
+		.clr_eram_ptr(pixel_cnt == FRAME_PIXELS - 1),
+		.din(eram_dout),
+		.eram_ptr(eram_ptr),
+		.active_item_count(active_item_count),
+		.dout(item),
+		.pop(pixel_cnt_plus1 == item_end_offset)
+	);
+
+	wire [C_AXIS_TDATA_WIDTH-1:0] filtered_tdata = match ? item_RGB : s00_axis_tdata;
+
 	always @(posedge axis_aclk or negedge axis_aresetn) begin
 		if (!axis_aresetn) begin
-			eram_ptr <= 0;
-		end else if (s00_axis_tvalid && m00_axis_tready) begin
-			if (pixel_cnt == FRAME_PIXELS - 1) begin
-				eram_ptr <= 0;
-			end else if (eram_ptr_plus1 < active_item_count && pixel_cnt_plus1 == item_end_offset) begin
-				eram_ptr <= eram_ptr_plus1;	// The next item
-			end else if (s00_axis_tuser) begin	// The statement must be after the check of the next item
-				eram_ptr <= 0;	// Reset to the first item
-			end
+			axis_pipe_tvalid <= 1'b0;
+			axis_pipe_tdata <= {C_AXIS_TDATA_WIDTH{1'b0}};
+			axis_pipe_tstrb <= {(C_AXIS_TDATA_WIDTH/8){1'b0}};
+			axis_pipe_tlast <= 1'b0;
+			axis_pipe_tuser <= 1'b0;
+		end else if (axis_pipe_ready) begin
+			axis_pipe_tvalid <= s00_axis_tvalid;
+			axis_pipe_tdata <= filtered_tdata;
+			axis_pipe_tstrb <= s00_axis_tstrb;
+			axis_pipe_tlast <= s00_axis_tlast;
+			axis_pipe_tuser <= s00_axis_tuser;
 		end
 	end
 
-	wire match = (pixel_cnt >= item_offset) && (pixel_cnt < item_end_offset);
-
-	assign m00_axis_tvalid = s00_axis_tvalid;
-	assign s00_axis_tready = m00_axis_tready;
-	assign m00_axis_tlast  = s00_axis_tlast;
-	assign m00_axis_tuser  = s00_axis_tuser;
-	assign m00_axis_tstrb  = s00_axis_tstrb;
-	assign m00_axis_tdata  = match ? item_rgb888 : s00_axis_tdata;
+	assign m00_axis_tvalid = axis_pipe_tvalid;
+	assign s00_axis_tready = axis_pipe_ready;
+	assign m00_axis_tlast  = axis_pipe_tlast;
+	assign m00_axis_tuser  = axis_pipe_tuser;
+	assign m00_axis_tstrb  = axis_pipe_tstrb;
+	assign m00_axis_tdata  = axis_pipe_tdata;
 // User logic ends
 
 endmodule
