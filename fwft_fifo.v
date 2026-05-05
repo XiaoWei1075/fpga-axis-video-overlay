@@ -13,6 +13,7 @@ module fwft_fifo #
 	
 	input wire [DATA_WIDTH-1:0] din,
 	output reg [ERAM_ADDR_WIDTH-1:0] eram_ptr,
+	input wire [1:0] pixel_format,
 	
 	input wire [ERAM_ADDR_WIDTH-1:0] active_item_count,
 	output wire [DATA_WIDTH-1:0] dout,
@@ -22,6 +23,40 @@ module fwft_fifo #
 	localparam ADDR_WIDTH = $clog2(DEPTH);
 
 	reg [DATA_WIDTH-1:0] mem [0:DEPTH-1];
+
+	localparam [1:0] RGB888 = 2'b00;
+	localparam [1:0] BGR888 = 2'b01;
+	localparam [1:0] RGB565 = 2'b10;
+	localparam [1:0] BGR565 = 2'b11;
+
+	function [23:0] to_rgb888;
+		input [23:0] pixel_in;
+		input [1:0] format_sel;
+		reg [4:0] r5;
+		reg [5:0] g6;
+		reg [4:0] b5;
+		begin
+			case (format_sel)
+				RGB888: to_rgb888 = pixel_in;
+				BGR888: to_rgb888 = {pixel_in[7:0], pixel_in[15:8], pixel_in[23:16]};
+				RGB565:
+				begin
+					r5 = pixel_in[15:11];
+					g6 = pixel_in[10:5];
+					b5 = pixel_in[4:0];
+					to_rgb888 = {{r5, r5[4:2]}, {g6, g6[5:4]}, {b5, b5[4:2]}};
+				end
+				BGR565:
+				begin
+					b5 = pixel_in[15:11];
+					g6 = pixel_in[10:5];
+					r5 = pixel_in[4:0];
+					to_rgb888 = {{r5, r5[4:2]}, {g6, g6[5:4]}, {b5, b5[4:2]}};
+				end
+				default: to_rgb888 = pixel_in;
+			endcase
+		end
+	endfunction
 
 	reg [ADDR_WIDTH:0] wr_ptr;
 	reg [ADDR_WIDTH:0] rd_ptr;
@@ -34,6 +69,8 @@ module fwft_fifo #
 	assign dout  = mem[rd_addr];
 
 	wire do_pop  = pop && (!empty);
+
+	wire [DATA_WIDTH-1:0] din_conv = {din[63:24], to_rgb888(din[23:0], pixel_format)};
 
 	// The memory read has one clock of latency.
 	// do_push is the read request of the current eram_ptr.
@@ -64,6 +101,8 @@ module fwft_fifo #
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
 			do_push_d <= 'b0;
+		end else if (clr_eram_ptr) begin
+			do_push_d <= 'b0;
 		end else begin
 			do_push_d <= do_push;
 		end
@@ -78,7 +117,7 @@ module fwft_fifo #
 			rd_ptr   <= 'b0;
 		end else begin
 			if(do_push_d) begin
-				mem[wr_addr] <= din;
+				mem[wr_addr] <= din_conv;
 				wr_ptr      <= wr_ptr + 1'b1;
 			end
 			if(do_pop) begin

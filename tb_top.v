@@ -716,9 +716,9 @@ module tb_top;
         // 1. Configure Filter
         // Register 0 (enable_filter) = 1
         axi_write(33'h80400000, 32'd1);
-        // Register 7 (pixel_format) = 2'b01 (BGR888)
-        axi_write(33'h8040001C, 32'd1);
-        // Base pattern from frame 01: hexagram (blue)
+        // Register 7 (pixel_format) = alpha 1/4 + BGR888
+        axi_write(33'h8040001C, 32'h00010001);
+        // Base pattern from frame 01: hexagram (white), 1/4 alpha
         write_hexagram();
         commit_and_read_counts(1);
 
@@ -809,10 +809,14 @@ module tb_top;
             if (!red_pattern_written && (stream_frame_idx >= 10)) begin
                 write_circle();
                 commit_and_read_counts(10);
+                // alpha 3/4 + BGR888 for circle
+                axi_write(33'h8040001C, 32'h00030001);
                 red_pattern_written = 1'b1;
             end else if (!green_pattern_written && (stream_frame_idx >= 20)) begin
                 write_square();
                 commit_and_read_counts(20);
+                // alpha 0 + BGR888 for square
+                axi_write(33'h8040001C, 32'h00000001);
                 green_pattern_written = 1'b1;
             end
         end

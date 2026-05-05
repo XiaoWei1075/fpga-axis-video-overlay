@@ -10,7 +10,7 @@ AXI4-Stream pixel overlay engine with run-length encoding. Source-only distribut
 
 ## What It Does
 
-This IP sits inline on an AXI4-Stream video pipeline. You write color patterns through an AXI4-Lite register interface as RLE-compressed pixel runs. The engine overlays them onto the live stream while preserving one-pixel-per-cycle throughput.
+This IP sits inline on an AXI4-Stream video pipeline. You write color patterns through an AXI4-Lite register interface as RLE-compressed pixel runs. The engine overlays them onto the live stream while preserving one-pixel-per-cycle throughput. When an overlay item matches, the output is a simple alpha blend between the input pixel and the overlay color.
 
 Patterns are stored in a double-buffered BRAM. Writing hits one bank while the other bank is read. A `commit` register initiates a bank swap at the next frame boundary, making pattern changes tear-free.
 
@@ -27,9 +27,16 @@ The BRAM read port is synchronous and has an inherent one clock latency. The des
     - `fwft_fifo.v`
 3.  Add the simulation source:
     - `tb_top.v`
-4.  Generate a Block Memory Generator IP named `blk_mem_gen_0` with simple Dual-Port RAM, 64-bit write / 64-bit read, depth matching twice `ERAM_DEPTH`.
+4.  Generate a Block Memory Generator IP named `blk_mem_gen_0` with simple dual-port RAM, 64-bit write / 64-bit read, depth matching twice `ERAM_DEPTH`.
 5.  Update the input file paths in `tb_top.v` — search for `$sformat(in_path, …)` and replace the absolute paths with your `InData/` directory location.
 6.  Click **Run Behavioral Simulation**.
+
+Block RAM IP parameters:
+- Name: blk_mem_gen_0
+- Type: simple dual-port RAM (A: write, B: read)
+- Data width: 64-bit on both ports
+- Address width: ERAM_ADDR_WIDTH+1 bits (bank select + item index)
+- Depth: 2 x ERAM_DEPTH (with ERAM_ADDR_WIDTH=13, ERAM_DEPTH is 8192 and total depth is 16384)
 
 The testbench streams 30 frames of raw 256×256 RGB while applying three overlay patterns:
 
@@ -73,11 +80,13 @@ This IP uses two clock domains. AXI4-Lite typically runs around 133 MHz while th
 
 Bank switching is frame-aligned. Writing `commit_bank = 1` marks the write bank ready, and the hardware waits for the current read frame to finish before swapping banks and clearing the commit flag.
 
-The output pixel format is configurable. The `pixel_format` register selects RGB888, BGR888, RGB565, or BGR565.
+The output pixel format is configurable. The `pixel_format` register selects RGB888, BGR888, RGB565, or BGR565. The same register also selects a discrete alpha level used by the overlay blend.
 
 The stream path uses a small registered stage for timing closure while still using block RAM for the item list. This is done by prefetching items into a small first-word-fall-through fifo.
 
 Timing-related details are handled explicitly. The fifo treats `do_push` as the BRAM read request and `do_push_d` as the one-cycle delayed data-valid. It also predicts pointer movement in the current cycle to avoid overflow, and it issues requests for the current `eram_ptr` so the first item and the last item are both fetched correctly.
+
+The alpha blend is implemented with shift-and-add only. The input pixel is treated as the source, the overlay color is treated as the destination, and alpha is a small set of discrete ratios to keep logic shallow.
 
 ## Register Map
 
@@ -92,8 +101,10 @@ Base address: `0x80400000`
 | `0x10` | `item_overflow` | R | Sticky overflow flag |
 | `0x14` | `active_item_count` | R | Number of items in the active bank |
 | `0x18` | `eram_write_ptr` | R | Number of items queued for commit |
-| `0x1C` | `pixel_format` | R/W | bits [1:0]: 00=RGB888, 01=BGR888, 10=RGB565, 11=BGR565 |
+| `0x1C` | `pixel_format` | R/W | bits [1:0] select RGB888(00), BGR888(01), RGB565(10), BGR565(11); bits [18:16] select alpha (000=0, 001=1/4, 010=1/2, 011=3/4, others=1) |
 | `0x20+` | item data | W | 64-bit RLE items across two 32-bit writes |
+
+pixel_format combines two controls in one register. Bits [1:0] choose the color encoding used by item data, and bits [18:16] choose the alpha ratio for blending. Alpha 0 means fully overlay color, alpha 1 means fully input pixel, and the intermediate codes select 1/4, 1/2, or 3/4 input pixel contribution.
 
 ## Repository Files
 

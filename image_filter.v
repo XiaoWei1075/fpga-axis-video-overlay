@@ -71,39 +71,6 @@ module image_filter #
 	localparam integer COUNTER_WIDTH = 24;
 	localparam [COUNTER_WIDTH-1:0] FRAME_PIXELS = FRAME_WIDTH * FRAME_HEIGHT;
 
-	localparam [1:0] RGB888 = 2'b00;
-	localparam [1:0] BGR888 = 2'b01;
-	localparam [1:0] RGB565 = 2'b10;
-	localparam [1:0] BGR565 = 2'b11;
-
-	function [23:0] to_rgb888;
-		input [23:0] pixel_in;
-		input [1:0] format_sel;
-		reg [4:0] r5;
-		reg [5:0] g6;
-		reg [4:0] b5;
-		begin
-			case (format_sel)
-				RGB888: to_rgb888 = pixel_in;
-				BGR888: to_rgb888 = {pixel_in[7:0], pixel_in[15:8], pixel_in[23:16]};
-				RGB565:
-				begin
-					r5 = pixel_in[15:11];
-					g6 = pixel_in[10:5];
-					b5 = pixel_in[4:0];
-					to_rgb888 = {{r5, r5[4:2]}, {g6, g6[5:4]}, {b5, b5[4:2]}};
-				end
-				BGR565:
-				begin
-					b5 = pixel_in[15:11];
-					g6 = pixel_in[10:5];
-					r5 = pixel_in[4:0];
-					to_rgb888 = {{r5, r5[4:2]}, {g6, g6[5:4]}, {b5, b5[4:2]}};
-				end
-				default: to_rgb888 = pixel_in;	// default to RGB888
-			endcase
-		end
-	endfunction
 
 	reg  [COUNTER_WIDTH-1:0] pixel_cnt;
 	wire [COUNTER_WIDTH-1:0] pixel_cnt_plus1 = pixel_cnt + 1;
@@ -182,7 +149,35 @@ image_filter_slave_lite_v1_0_S00_AXI # (
 	wire [ERAM_DATA_WIDTH-1:0] item;
 	wire [COUNTER_WIDTH-1:0] item_offset  = item[63:40];
 	wire [15:0] item_runlen  = item[39:24];
-	wire [23:0] item_RGB     = to_rgb888(item[23:0], pixel_format[1:0]);
+	wire [23:0] item_RGB     = item[23:0];
+
+	// alpha is selected by pixel_format[18:16]
+	// 000 -> 0, 001 -> 1/4, 010 -> 1/2, 011 -> 3/4, others -> 1
+	// src is the original input pixel and dst is the overlay color
+	wire [2:0] alpha_sel = pixel_format[18:16];
+
+	function [7:0] blend8;
+		input [7:0] src;
+		input [7:0] dst;
+		input [2:0] sel;
+		reg [9:0] s1;
+		reg [9:0] s2;
+		reg [9:0] d1;
+		reg [9:0] d2;
+		begin
+			s1 = {2'b0, src} >> 1;	// 1/2 of src
+			s2 = {2'b0, src} >> 2;	// 1/4 of src
+			d1 = {2'b0, dst} >> 1;	// 1/2 of dst
+			d2 = {2'b0, dst} >> 2;	// 1/4 of dst
+			case (sel)
+				3'b000: blend8 = dst;	// 0% src, 100% dst
+				3'b001: blend8 = s2 + d1 + d2;	// 1/4 src, 3/4 dst
+				3'b010: blend8 = s1 + d1;	// 1/2 src, 1/2 dst
+				3'b011: blend8 = s1 + s2 + d2;	// 3/4 src, 1/4 dst
+				default: blend8 = src;	// 100% src, 0% dst
+			endcase
+		end
+	endfunction
 
 	wire [COUNTER_WIDTH-1:0] item_end_offset = item_offset + item_runlen;
 
@@ -204,12 +199,18 @@ image_filter_slave_lite_v1_0_S00_AXI # (
 		.clr_eram_ptr(pixel_cnt == FRAME_PIXELS - 1),
 		.din(eram_dout),
 		.eram_ptr(eram_ptr),
+		.pixel_format(pixel_format[1:0]),
 		.active_item_count(active_item_count),
 		.dout(item),
-		.pop(pixel_cnt_plus1 == item_end_offset)
+		.pop(axis_fire_in && (pixel_cnt_plus1 == item_end_offset))
 	);
 
-	wire [C_AXIS_TDATA_WIDTH-1:0] filtered_tdata = match ? item_RGB : s00_axis_tdata;
+	wire [7:0] blend_r = blend8(s00_axis_tdata[23:16], item_RGB[23:16], alpha_sel);
+	wire [7:0] blend_g = blend8(s00_axis_tdata[15:8],  item_RGB[15:8],  alpha_sel);
+	wire [7:0] blend_b = blend8(s00_axis_tdata[7:0],   item_RGB[7:0],   alpha_sel);
+	wire [C_AXIS_TDATA_WIDTH-1:0] blended_tdata = {blend_r, blend_g, blend_b};
+
+	wire [C_AXIS_TDATA_WIDTH-1:0] filtered_tdata = match ? blended_tdata : s00_axis_tdata;
 
 	always @(posedge axis_aclk or negedge axis_aresetn) begin
 		if (!axis_aresetn) begin
