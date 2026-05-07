@@ -90,19 +90,20 @@ The alpha blend is implemented with shift-and-add only. The input pixel is treat
 
 ## Register Map
 
-Base address: `0x80400000`
-
 | Offset | Name | R/W | Description |
 |:---:|------|:---:|------|
 | `0x00` | `enable_filter` | R/W | Enable overlay (1 = on) |
-| `0x04` | `frame_pixels` | R | Total pixels per frame (read-only) |
+| `0x04` | `ERAM_DEPTH` | R | Single-bank ERAM depth (= 2^ERAM_ADDR_WIDTH) |
 | `0x08` | `pixel_offset` | R | Current pixel counter |
 | `0x0C` | `commit_bank` | R/W | Write 1 to commit, auto-cleared on swap |
 | `0x10` | `item_overflow` | R | Sticky overflow flag |
 | `0x14` | `active_item_count` | R | Number of items in the active bank |
 | `0x18` | `eram_write_ptr` | R | Number of items queued for commit |
 | `0x1C` | `pixel_format` | R/W | bits [1:0] select RGB888(00), BGR888(01), RGB565(10), BGR565(11); bits [18:16] select alpha (000=0, 001=1/4, 010=1/2, 011=3/4, others=1) |
-| `0x20+` | item data | W | 64-bit RLE items across two 32-bit writes |
+| `0x20` | `FRAME_WIDTH` | R | Frame width in pixels |
+| `0x24` | `FRAME_HEIGHT` | R | Frame height in pixels |
+| `0x28`–`0x2C` | — | — | Reserved |
+| `≥0x30` | ERAM Data | W | 64-bit RLE items across two 32-bit writes |
 
 pixel_format combines two controls in one register. Bits [1:0] choose the color encoding used by item data, and bits [18:16] choose the alpha ratio for blending. Alpha 0 means fully overlay color, alpha 1 means fully input pixel, and the intermediate codes select 1/4, 1/2, or 3/4 input pixel contribution.
 

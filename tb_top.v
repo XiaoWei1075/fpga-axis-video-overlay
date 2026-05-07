@@ -163,8 +163,8 @@ module tb_top;
             data_l = {run_len[7:0], rgb};
             data_h = {offset, run_len[15:8]};
             
-            axi_write(33'h80400020, data_l); // Write lower 32 bits
-            axi_write(33'h80400024, data_h); // Write upper 32 bits (triggers write to ERAM)
+            axi_write(33'h80400030, data_l); // Write lower 32 bits
+            axi_write(33'h80400034, data_h); // Write upper 32 bits (triggers write to ERAM)
         end
     endtask
 
